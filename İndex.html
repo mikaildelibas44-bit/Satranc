@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dodo Online Satranç</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body {
+            background: #1a1c20;
+            color: #f0f0f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            padding: 15px;
+            user-select: none;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 10px; color: #4ade80; text-align: center; }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: center;
+            margin-bottom: 12px;
+            max-width: 420px;
+            width: 100%;
+        }
+        button {
+            background: #2d3139;
+            color: white;
+            border: 1px solid #404550;
+            padding: 9px 14px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        button:active { transform: scale(0.96); }
+        button.active { background: #2563eb; border-color: #3b82f6; }
+        button#onlineBtn { background: #16a34a; border-color: #22c55e; width: 100%; font-size: 1rem; padding: 11px; }
+        button#onlineBtn.searching { background: #d97706; border-color: #f59e0b; }
+        #status {
+            background: #252830;
+            padding: 10px 16px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            font-weight: 600;
+            text-align: center;
+            width: 100%;
+            max-width: 420px;
+            border: 1px solid #363a45;
+        }
+        #board {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            width: 100%;
+            max-width: 420px;
+            aspect-ratio: 1 / 1;
+            border: 4px solid #363a45;
+            border-radius: 6px;
+            overflow: hidden;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        }
+        .square {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: clamp(24px, 8vw, 42px);
+            cursor: pointer;
+            position: relative;
+        }
+        .light { background: #ebecd0; }
+        .dark { background: #739552; }
+        .selected { background: #f5f682 !important; }
+        .last-move { background: rgba(245, 246, 130, 0.5) !important; }
+        .check { background: #ef4444 !important; }
+        .piece { line-height: 1; z-index: 2; }
+        .piece.w { color: #ffffff; text-shadow: 0 2px 3px rgba(0,0,0,0.8); }
+        .piece.b { color: #111827; text-shadow: 0 1px 1px rgba(255,255,255,0.3); }
+        .hint::after {
+            content: '';
+            width: 28%;
+            height: 28%;
+            background: rgba(0, 0, 0, 0.25);
+            border-radius: 50%;
+            position: absolute;
+            z-index: 1;
+        }
+        .capture-hint::after {
+            content: '';
+            width: 82%;
+            height: 82%;
+            border: 4px solid rgba(220, 38, 38, 0.65);
+            border-radius: 50%;
+            position: absolute;
+            z-index: 1;
+        }
+        .bottom-bar {
+            display: flex;
+            gap: 10px;
+            margin-top: 12px;
+            width: 100%;
+            max-width: 420px;
+        }
+        .bottom-bar button { flex: 1; }
+    </style>
+</head>
+<body>
+
+    <h1>♟️ Dodo Online Satranç</h1>
+
+    <div class="controls">
+        <button id="onlineBtn" onclick="findOnlineMatch()">🌐 İnsan Bul (Online Eşleş)</button>
+        <button id="botBtn" class="active" onclick="setMode('bot')">🤖 Bilgisayara Karşı</button>
+        <button id="localBtn" onclick="setMode('local')">👥 2 Kişilik</button>
+    </div>
+
+    <div id="status">Sıra: Beyaz (Bilgisayara Karşı)</div>
+
+    <div id="board"></div>
+
+    <div class="bottom-bar">
+        <button onclick="resetGame()">🔄 Yeni Oyun</button>
+        <button onclick="flipBoard()">🔃 Tahtayı Döndür</button>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+        import { getDatabase, ref, set, get, push, onValue, update, remove, onDisconnect } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+        const firebaseConfig = {
+            databaseURL: "https://chess-dodo-demo-default-rtdb.europe-west1.firebasedatabase.app"
+        };
+
+        let db = null;
+        try {
+            const app = initializeApp(firebaseConfig);
+            db = getDatabase(app);
+        } catch (e) {
+            console.log("Offline mod aktif");
+        }
+
+        const game = new Chess();
+        let mode = 'bot';
+        let selectedSquare = null;
+        let flipped = false;
+        let playerColor = 'w';
+        let currentRoomId = null;
+        let roomListener = null;
+
+        const pieceSymbols = {
+            'p': '♟', 'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚',
+            'P': '♙', 'R': '♖', 'N': '♘', 'B': '♗', 'Q': '♕', 'K': '♔'
+        };
+
+        window.setMode = function(newMode) {
+            if (roomListener) { roomListener(); roomListener = null; }
+            currentRoomId = null;
+            mode = newMode;
+            playerColor = 'w';
+            flipped = false;
+            document.getElementById('botBtn').classList.toggle('active', mode === 'bot');
+            document.getElementById('localBtn').classList.toggle('active', mode === 'local');
+            const onlineBtn = document.getElementById('onlineBtn');
+            onlineBtn.classList.remove('searching');
+            onlineBtn.innerText = '🌐 İnsan Bul (Online Eşleş)';
+            game.reset();
+            selectedSquare = null;
+            renderBoard();
+            updateStatus();
+        };
+
+        window.findOnlineMatch = async function() {
+            const onlineBtn = document.getElementById('onlineBtn');
+            const statusEl = document.getElementById('status');
+
+            if (!db) {
+                statusEl.innerText = "Bağlantı hatası! İnternetini kontrol et.";
+                return;
+            }
+
+            if (roomListener) { roomListener(); roomListener = null; }
+            document.getElementById('botBtn').classList.remove('active');
+            document.getElementById('localBtn').classList.remove('active');
+            
+            mode = 'online';
+            onlineBtn.classList.add('searching');
+            onlineBtn.innerText = '⏳ Rakip Aranıyor...';
+            statusEl.innerText = 'Açık oda aranıyor...';
+
+            const roomsRef = ref(db, 'rooms');
+            try {
+                const snapshot = await get(roomsRef);
+                let joinedRoom = null;
+
+                if (snapshot.exists()) {
+                    const rooms = snapshot.val();
+                    for (const [id, room] of Object.entries(rooms)) {
+                        if (room.status === 'waiting' && (Date.now() - room.createdAt < 120000)) {
+                            joinedRoom = id;
+                            break;
+                        }
+                    }
+                }
+
+                if (joinedRoom) {
+                    currentRoomId = joinedRoom;
+                    playerColor = 'b';
+                    flipped = true;
+                    await update(ref(db, `rooms/${currentRoomId}`), {
+                        status: 'playing',
+                        blackJoined: true
+                    });
+                    listenToRoom(currentRoomId);
+                } else {
+                    const newRoomRef = push(roomsRef);
+                    currentRoomId = newRoomRef.key;
+                    playerColor = 'w';
+                    flipped = false;
+                    await set(newRoomRef, {
+                        status: 'waiting',
+                        fen: game.fen(),
+                        createdAt: Date.now()
+                    });
+                    onDisconnect(newRoomRef).remove();
+                    statusEl.innerText = 'Rakip bekleniyor... Arkadaşına linki at!';
+                    listenToRoom(currentRoomId);
+                }
+            } catch (err) {
+                statusEl.innerText = 'Sunucu yoğun! Bilgisayara karşı moduna dönebilirsin.';
+                onlineBtn.classList.remove('searching');
+                onlineBtn.innerText = '🌐 İnsan Bul (Online Eşleş)';
+            }
+        };
+
+        function listenToRoom(roomId) {
+            const roomRef = ref(db, `rooms/${roomId}`);
+            roomListener = onValue(roomRef, (snapshot) => {
+                const data = snapshot.val();
+                if (!data) return;
+
+                const onlineBtn = document.getElementById('onlineBtn');
+                if (data.status === 'playing') {
+                    onlineBtn.classList.remove('searching');
+                    onlineBtn.innerText = playerColor === 'w' ? '🟢 Eşleşti (Sen: Beyaz)' : '🟢 Eşleşti (Sen: Siyah)';
+                    if (data.fen && data.fen !== game.fen()) {
+                        game.load(data.fen);
+                        selectedSquare = null;
+                        renderBoard();
+                    }
+                    updateStatus();
+                }
+            });
+        }
+
+        function renderBoard() {
+            const boardEl = document.getElementById('board');
+            boardEl.innerHTML = '';
+            const boardData = game.board();
+            const legalMoves = selectedSquare ? game.moves({ square: selectedSquare, verbose: true }) : [];
+
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    const row = flipped ? 7 - r : r;
+                    const col = flipped ? 7 - c : c;
+                    const squareName = String.fromCharCode(97 + col) + (8 - row);
+                    const piece = boardData[row][col];
+
+                    const sqEl = document.createElement('div');
+                    sqEl.className = 'square ' + ((row + col) % 2 === 0 ? 'light' : 'dark');
+
+                    if (selectedSquare === squareName) sqEl.classList.add('selected');
+
+                    const moveHint = legalMoves.find(m => m.to === squareName);
+                    if (moveHint) {
+                        sqEl.classList.add(piece ? 'capture-hint' : 'hint');
+                    }
+
+                    if (piece) {
+                        const pEl = document.createElement('span');
+                        pEl.className = 'piece ' + piece.color;
+                        const symbolKey = piece.color === 'w' ? piece.type.toUpperCase() : piece.type;
+                        pEl.innerText = pieceSymbols[symbolKey];
+                        sqEl.appendChild(pEl);
+                    }
+
+                    sqEl.onclick = () => onSquareClick(squareName);
+                    boardEl.appendChild(sqEl);
+                }
+            }
+        }
+
+        function onSquareClick(square) {
+            if (game.game_over()) return;
+            if (mode === 'bot' && game.turn() !== 'w') return;
+            if (mode === 'online' && game.turn() !== playerColor) return;
+
+            if (selectedSquare) {
+                const move = game.move({
+                    from: selectedSquare,
+                    to: square,
+                    promotion: 'q'
+                });
+
+                if (move) {
+                    selectedSquare = null;
+                    renderBoard();
+                    updateStatus();
+
+                    if (mode === 'online' && currentRoomId && db) {
+                        update(ref(db, `rooms/${currentRoomId}`), { fen: game.fen() });
+                    } else if (mode === 'bot' && !game.game_over()) {
+                        setTimeout(makeBotMove, 350);
+                    }
+                    return;
+                }
+            }
+
+            const piece = game.get(square);
+            if (piece && piece.color === game.turn()) {
+                selectedSquare = square;
+            } else {
+                selectedSquare = null;
+            }
+            renderBoard();
+        }
+
+        function makeBotMove() {
+            const moves = game.moves();
+            if (moves.length === 0) return;
+            const randomMove = moves[Math.floor(Math.random() * moves.length)];
+            game.move(randomMove);
+            renderBoard();
+            updateStatus();
+        }
+
+        function updateStatus() {
+            const statusEl = document.getElementById('status');
+            let turnText = game.turn() === 'w' ? 'Beyaz' : 'Siyah';
+
+            if (game.in_checkmate()) {
+                statusEl.innerText = `🏆 Şah Mat! ${game.turn() === 'w' ? 'Siyah' : 'Beyaz'} Kazandı!`;
+            } else if (game.in_draw()) {
+                statusEl.innerText = '🤝 Oyun Berabere Bitti!';
+            } else {
+                let extra = '';
+                if (mode === 'online') {
+                    extra = game.turn() === playerColor ? ' (Senin Sıran)' : ' (Rakip Düşünüyor)';
+                }
+                statusEl.innerText = `Sıra: ${turnText}${extra}` + (game.in_check() ? ' ⚠️ ŞAH!' : '');
+            }
+        }
+
+        window.resetGame = function() {
+            if (mode === 'online') {
+                setMode('bot');
+                return;
+            }
+            game.reset();
+            selectedSquare = null;
+            renderBoard();
+            updateStatus();
+        };
+
+        window.flipBoard = function() {
+            flipped = !flipped;
+            renderBoard();
+        };
+
+        renderBoard();
+    </script>
+</body>
+  </html>
+  
